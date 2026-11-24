@@ -1,0 +1,43 @@
+/* ==========================================================================
+   APP SHELL STYLING
+   ========================================================================== */
+
+.app-wrapper {
+  width: 100vw;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  background-color: var(--bg-darkest);
+  position: relative;
+  overflow: hidden;
+}
+
+/* Chat Layout Container */
+.chat-layout {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  overflow: hidden;
+  position: relative;
+}
+
+/* Mobile Slide Behavior */
+@media (max-width: 768px) {
+  .chat-layout {
+    width: 200%;
+    transform: translateX(0);
+    transition: transform 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+  }
+
+  .chat-layout.mobile-active-chat {
+    transform: translateX(-50%);
+  }
+
+  .chat-layout .chat-sidebar {
+    width: 50vw;
+  }
+
+  .chat-layout .chat-area {
+    width: 50vw;
+  }
+}

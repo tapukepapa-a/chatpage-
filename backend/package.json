@@ -1,0 +1,30 @@
+{
+  "name": "just-us-backend",
+  "version": "1.0.0",
+  "description": "Backend API for Just Us private chat application",
+  "main": "src/server.js",
+  "type": "module",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "nodemon src/server.js",
+    "test": "node test-models.js",
+    "test:auth": "node test-auth.js",
+    "config:db": "node configure-db.js"
+  },
+  "dependencies": {
+    "bcryptjs": "^3.0.3",
+    "cookie": "^2.0.2",
+    "cookie-parser": "^1.4.7",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "express-rate-limit": "^8.7.5",
+    "jsonwebtoken": "^9.0.3",
+    "just-us-chat": "file:..",
+    "mongoose": "^8.5.2",
+    "socket.io": "^4.8.4"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.4"
+  }
+}
