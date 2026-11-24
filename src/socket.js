@@ -1,17 +1,35 @@
 import { io } from 'socket.io-client';
 
-// Create a singleton socket instance using Vite's proxy for Socket.IO.
-// The client connects to the same origin (frontend) and Vite proxies '/socket.io' to the backend.
-const socket = io(window.location.origin, {
+// Where the Socket.IO server lives.
+// - Same origin (dev proxy, or backend serving the frontend): leave VITE_SOCKET_URL empty.
+// - Frontend on Vercel, backend on Render: set VITE_SOCKET_URL to the Render address.
+const SOCKET_URL = import.meta.env.VITE_SOCKET_URL || window.location.origin;
+
+const socket = io(SOCKET_URL, {
   path: '/socket.io',
   withCredentials: true,
   autoConnect: false,
-  transports: ['websocket'] // Force WebSocket for reliability.
+  transports: ['websocket'],
+  // Fetch a fresh short-lived token on every connect / reconnect attempt.
+  // '/api/...' goes through the same-origin proxy (Vercel rewrite or Vite proxy),
+  // so the session cookie is sent normally.
+  auth: async (cb) => {
+    try {
+      const res = await fetch('/api/auth/socket-token', {
+        credentials: 'include',
+        headers: { 'X-JustUs-Client': '1' }
+      });
+      if (!res.ok) return cb({});
+      const data = await res.json();
+      cb({ token: data.token });
+    } catch {
+      cb({});
+    }
+  }
 });
 
-// Log connection errors for debugging.
 socket.on('connect_error', (err) => {
-  console.error('Socket connection error:', err);
+  console.error('Socket connection error:', err.message);
 });
-// Export the socket so components can import and use it.
+
 export default socket;

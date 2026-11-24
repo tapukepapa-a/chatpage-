@@ -3,6 +3,7 @@ import {
   register,
   login,
   getMe,
+  getSocketToken,
   logout,
   getRegistrationStatus
 } from '../controllers/authController.js';
@@ -18,5 +19,6 @@ router.post('/logout', logout);
 
 // Protected routes (requires valid session cookie)
 router.get('/me', protect, getMe);
+router.get('/socket-token', protect, getSocketToken);
 
 export default router;

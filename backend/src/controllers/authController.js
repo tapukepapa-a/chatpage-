@@ -219,3 +219,18 @@ export const logout = (req, res) => {
     message: 'Logged out successfully.'
   });
 };
+
+/**
+ * @route   GET /api/auth/socket-token
+ * @desc    Issue a short-lived token so the browser can authenticate the Socket.IO
+ *          connection directly to the backend (cookies are not sent cross-site).
+ * @access  Private (protected by JWT cookie)
+ */
+export const getSocketToken = (req, res) => {
+  const token = jwt.sign(
+    { userId: req.user._id, purpose: 'socket' },
+    process.env.JWT_SECRET,
+    { expiresIn: '2m' }
+  );
+  return res.status(200).json({ success: true, token });
+};

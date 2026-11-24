@@ -14,19 +14,28 @@ const recentMessageIds = new Map();
  */
 export const socketAuthMiddleware = async (socket, next) => {
   try {
-    const cookieHeader = socket.handshake.headers.cookie;
-    if (!cookieHeader) {
-      return next(new Error('Authentication error: No session cookie provided'));
+    // Preferred: short-lived token sent by the browser (works across sites, e.g. Vercel -> Render)
+    let token = socket.handshake.auth?.token;
+    let requireSocketPurpose = true;
+
+    // Fallback: session cookie (works when frontend and backend share one origin)
+    if (!token) {
+      const cookieHeader = socket.handshake.headers.cookie;
+      if (!cookieHeader) {
+        return next(new Error('Authentication error: No session provided'));
+      }
+      token = parseCookie(cookieHeader).jwt;
+      requireSocketPurpose = false;
     }
 
-    const parsedCookies = parseCookie(cookieHeader);
-    const token = parsedCookies.jwt;
-
     if (!token) {
-      return next(new Error('Authentication error: No token found in session cookie'));
+      return next(new Error('Authentication error: No token found'));
     }
 
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    if (requireSocketPurpose && decoded.purpose !== 'socket') {
+      return next(new Error('Authentication error: Invalid token'));
+    }
     const user = await User.findById(decoded.userId).select('-password');
 
     if (!user) {
