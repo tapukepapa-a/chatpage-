@@ -18,6 +18,7 @@ const formatMessage = (msg) => ({
   senderId: msg.sender,
   text: msg.text,
   timestamp: new Date(msg.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+  createdAt: msg.createdAt,
   status: msg.readAt ? 'read' : msg.deliveredAt ? 'delivered' : 'sent',
   acked: false,
   fading: false
@@ -38,38 +39,66 @@ export default function ChatArea({
   const [isTabVisible, setIsTabVisible] = useState(document.visibilityState === 'visible');
   const messagesEndRef = useRef(null);
   const timersRef = useRef([]);
+  const vanishingRef = useRef(new Set()); // ids already deleted on the server, still fading on screen
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   };
 
-  // Load chat history when component mounts or conversation changes
+  // Load chat history and MERGE it with what is on screen.
+  // This is also used to re-sync ticks after a reconnect: a phone that went to the
+  // background can miss the live "read" event, so we ask the server again.
+  const loadHistory = async () => {
+    const startedAt = Date.now();
+    try {
+      const res = await fetch('/api/messages?limit=200', { credentials: 'include' });
+      if (!res.ok) {
+        console.warn('Failed to fetch chat history', res.status);
+        return;
+      }
+      const data = await res.json();
+      if (!(data.success && Array.isArray(data.messages))) return;
+
+      const fresh = data.messages.map(formatMessage);
+      setMessages((prev) => {
+        const old = new Map(prev.map((m) => [m.id, m]));
+        const freshIds = new Set(fresh.map((m) => m.id));
+
+        const merged = fresh.map((m) => {
+          const o = old.get(m.id);
+          if (!o) return m;
+          return {
+            ...m,
+            acked: o.acked,
+            fading: o.fading,
+            status: STATUS_RANK[o.status] > STATUS_RANK[m.status] ? o.status : m.status
+          };
+        });
+
+        // Keep messages that are still in their "vanishing" countdown (already deleted
+        // on the server) and ones that arrived live while this request was running.
+        const keep = prev.filter(
+          (m) =>
+            !freshIds.has(m.id) &&
+            (vanishingRef.current.has(m.id) || new Date(m.createdAt).getTime() >= startedAt - 2000)
+        );
+
+        return [...merged, ...keep].sort(
+          (x, y) => new Date(x.createdAt).getTime() - new Date(y.createdAt).getTime()
+        );
+      });
+    } catch (e) {
+      console.error('Error fetching chat history', e);
+    }
+  };
+  const loadHistoryRef = useRef(loadHistory);
+  loadHistoryRef.current = loadHistory;
+
+  // Load history when the component mounts or the conversation changes
   useEffect(() => {
-    // Reset local state when conversation prop changes
     setMessages(conversation?.messages || []);
     setIsPartnerTyping(false);
-
-    // Load history from backend (authenticated via cookie)
-    async function fetchHistory() {
-      try {
-        const res = await fetch('/api/messages?limit=200', {
-          credentials: 'include'
-        });
-        if (res.ok) {
-          const data = await res.json();
-          if (data.success && Array.isArray(data.messages)) {
-            // Convert backend message format to the shape used by MessageItem
-            const formatted = data.messages.map(formatMessage);
-            setMessages(formatted);
-          }
-        } else {
-          console.warn('Failed to fetch chat history', res.status);
-        }
-      } catch (e) {
-        console.error('Error fetching chat history', e);
-      }
-    }
-    fetchHistory();
+    loadHistoryRef.current();
   }, [conversation?.id]);
 
   // Socket event listeners
@@ -114,10 +143,12 @@ export default function ChatArea({
 
     // Both people have seen these messages: hold briefly, fade out, then remove
     const handleVanish = ({ ids }) => {
+      ids.forEach((id) => vanishingRef.current.add(id));
       const holdTimer = setTimeout(() => {
         setMessages((prev) => prev.map((m) => (ids.includes(m.id) ? { ...m, fading: true } : m)));
         const removeTimer = setTimeout(() => {
           setMessages((prev) => prev.filter((m) => !ids.includes(m.id)));
+          ids.forEach((id) => vanishingRef.current.delete(id));
         }, VANISH_FADE_MS);
         timersRef.current.push(removeTimer);
       }, VANISH_HOLD_MS);
@@ -129,7 +160,10 @@ export default function ChatArea({
     };
 
     // Ask for partner's status now that listeners are attached (and after reconnects)
-    const requestStatus = () => socket.emit('get_partner_status');
+    const requestStatus = () => {
+      socket.emit('get_partner_status');
+      loadHistoryRef.current(); // re-sync ticks missed while disconnected
+    };
     if (socket.connected) requestStatus();
     socket.on('connect', requestStatus);
 
@@ -160,7 +194,11 @@ export default function ChatArea({
 
   // Track whether the browser tab / app is actually visible
   useEffect(() => {
-    const onVisibility = () => setIsTabVisible(document.visibilityState === 'visible');
+    const onVisibility = () => {
+      const visible = document.visibilityState === 'visible';
+      setIsTabVisible(visible);
+      if (visible) loadHistoryRef.current(); // catch up on anything missed in the background
+    };
     document.addEventListener('visibilitychange', onVisibility);
     return () => document.removeEventListener('visibilitychange', onVisibility);
   }, []);
