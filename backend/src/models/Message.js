@@ -32,6 +32,10 @@ const messageSchema = new mongoose.Schema(
       type: String,
       index: true
     },
+    // Receipts: ticks + "vanish after both have seen it"
+    deliveredAt: { type: Date, default: null }, // receiver's app was online when it arrived
+    readAt: { type: Date, default: null },      // receiver opened the chat and saw it
+    senderSeenAt: { type: Date, default: null }, // sender saw that it was read
     createdAt: {
       type: Date,
       default: Date.now

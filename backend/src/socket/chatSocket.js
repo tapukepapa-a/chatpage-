@@ -56,6 +56,33 @@ export const initChatSocket = (io) => {
   // Apply authentication middleware to every incoming socket connection
   io.use(socketAuthMiddleware);
 
+  // Send an event to every open tab/device of one user
+  const emitToUser = (userId, event, payload) => {
+    const sockets = onlineUsers.get(userId.toString());
+    if (!sockets) return;
+    for (const sid of sockets) io.to(sid).emit(event, payload);
+  };
+
+  // Disappearing messages: once the receiver has READ a message AND the sender has
+  // SEEN that it was read, delete it from the database and tell both screens.
+  const vanishSeenMessages = async (userA, userB) => {
+    const done = await Message.find({
+      $or: [
+        { sender: userA, receiver: userB },
+        { sender: userB, receiver: userA }
+      ],
+      readAt: { $ne: null },
+      senderSeenAt: { $ne: null }
+    }).select('_id').lean();
+
+    if (!done.length) return;
+    const ids = done.map((m) => m._id);
+    await Message.deleteMany({ _id: { $in: ids } });
+    const payload = { ids: ids.map((id) => id.toString()) };
+    emitToUser(userA, 'messages_vanish', payload);
+    emitToUser(userB, 'messages_vanish', payload);
+  };
+
   io.on('connection', async (socket) => {
     const currentUserId = socket.user._id.toString();
 
@@ -124,11 +151,15 @@ export const initChatSocket = (io) => {
           return;
         }
 
+        // Delivered = the partner has the app open (connected) right now
+        const partnerOnline = (onlineUsers.get(freshPartner._id.toString())?.size || 0) > 0;
+
         // Store message in MongoDB Atlas
         const savedMessage = await Message.create({
           sender: socket.user._id,
           receiver: freshPartner._id,
           text: trimmedText,
+          ...(partnerOnline ? { deliveredAt: new Date() } : {}),
           ...(clientMessageId ? { clientMessageId } : {})
         });
 
@@ -138,6 +169,8 @@ export const initChatSocket = (io) => {
           receiver: savedMessage.receiver,
           text: savedMessage.text,
           createdAt: savedMessage.createdAt,
+          deliveredAt: savedMessage.deliveredAt || null,
+          readAt: null,
           clientMessageId
         };
 
@@ -162,6 +195,43 @@ export const initChatSocket = (io) => {
           error: 'Server Error',
           message: 'Failed to process message. Please try again.'
         });
+      }
+    });
+
+    // Receiver opened the chat and saw the partner's unread messages
+    socket.on('mark_read', async () => {
+      try {
+        const pid = await getPartnerId();
+        if (!pid) return;
+        const unread = await Message.find({
+          sender: pid,
+          receiver: currentUserId,
+          readAt: null
+        }).select('_id').lean();
+
+        if (unread.length) {
+          const ids = unread.map((m) => m._id);
+          await Message.updateMany({ _id: { $in: ids } }, { $set: { readAt: new Date() } });
+          emitToUser(pid, 'messages_status', { ids: ids.map(String), status: 'read' });
+        }
+        await vanishSeenMessages(currentUserId, pid);
+      } catch (err) {
+        console.error('Socket mark_read error:', err.message);
+      }
+    });
+
+    // Sender saw that their messages were read -> they can now vanish
+    socket.on('ack_read', async () => {
+      try {
+        const pid = await getPartnerId();
+        if (!pid) return;
+        await Message.updateMany(
+          { sender: currentUserId, receiver: pid, readAt: { $ne: null }, senderSeenAt: null },
+          { $set: { senderSeenAt: new Date() } }
+        );
+        await vanishSeenMessages(currentUserId, pid);
+      } catch (err) {
+        console.error('Socket ack_read error:', err.message);
       }
     });
 
@@ -229,6 +299,20 @@ export const initChatSocket = (io) => {
             status: 'online'
           });
         }
+      }
+    }
+
+    // Messages that were waiting for me are now delivered -> update sender's ticks
+    if (partnerIdStr) {
+      const waiting = await Message.find({
+        sender: partnerIdStr,
+        receiver: currentUserId,
+        deliveredAt: null
+      }).select('_id').lean();
+      if (waiting.length) {
+        const ids = waiting.map((m) => m._id);
+        await Message.updateMany({ _id: { $in: ids } }, { $set: { deliveredAt: new Date() } });
+        emitToUser(partnerIdStr, 'messages_status', { ids: ids.map(String), status: 'delivered' });
       }
     }
 

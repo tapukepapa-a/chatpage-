@@ -158,7 +158,7 @@ export default function App() {
   const handleLogout = async () => {
     try {
       await logoutUser();
-      socket.disconnect();
+    socket.disconnect();
     } catch (e) {
       console.warn('Logout error:', e);
     }
@@ -273,6 +273,7 @@ export default function App() {
             onSendMessage={handleSendMessage}
             onBack={() => setIsMobileChatOpen(false)}
             onLogout={handleLogout}
+            isChatOpen={isMobileChatOpen}
             onReceiveMessage={handleReceiveMessage}
           />
         </div>

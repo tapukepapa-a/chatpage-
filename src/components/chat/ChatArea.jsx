@@ -5,18 +5,39 @@ import MessageItem from './MessageItem';
 import './ChatArea.css';
 import socket from '../../socket.js';
 
+// Disappearing messages: after both people have seen a message it stays on screen
+// for VANISH_HOLD_MS, then fades out for VANISH_FADE_MS and is removed.
+const VANISH_HOLD_MS = 10000;
+const VANISH_FADE_MS = 800;
+
+// Tick ranking so a status never goes backwards (sent -> delivered -> read)
+const STATUS_RANK = { sent: 0, delivered: 1, read: 2 };
+
+const formatMessage = (msg) => ({
+  id: msg._id,
+  senderId: msg.sender,
+  text: msg.text,
+  timestamp: new Date(msg.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+  status: msg.readAt ? 'read' : msg.deliveredAt ? 'delivered' : 'sent',
+  acked: false,
+  fading: false
+});
+
 export default function ChatArea({
   conversation,
   currentUser,
   onSendMessage,
   onBack,
-  onLogout
+  onLogout,
+  isChatOpen = true
 }) {
   const [inputText, setInputText] = useState('');
   const [messages, setMessages] = useState(conversation?.messages || []);
   const [isPartnerTyping, setIsPartnerTyping] = useState(false);
   const [partnerStatus, setPartnerStatus] = useState('offline');
+  const [isTabVisible, setIsTabVisible] = useState(document.visibilityState === 'visible');
   const messagesEndRef = useRef(null);
+  const timersRef = useRef([]);
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -38,12 +59,7 @@ export default function ChatArea({
           const data = await res.json();
           if (data.success && Array.isArray(data.messages)) {
             // Convert backend message format to the shape used by MessageItem
-            const formatted = data.messages.map((msg) => ({
-              id: msg._id,
-              senderId: msg.sender,
-              text: msg.text,
-              timestamp: new Date(msg.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-            }));
+            const formatted = data.messages.map(formatMessage);
             setMessages(formatted);
           }
         } else {
@@ -64,12 +80,7 @@ export default function ChatArea({
       setMessages((prev) => {
         // Prevent duplicate messages based on MongoDB _id
         if (prev.find((m) => m.id === msg._id)) return prev;
-        const formatted = {
-          id: msg._id,
-          senderId: msg.sender,
-          text: msg.text,
-          timestamp: new Date(msg.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-        };
+        const formatted = formatMessage(msg);
         return [...prev, formatted];
       });
     };
@@ -92,6 +103,27 @@ export default function ChatArea({
       }
     };
 
+    // Ticks: server tells the sender when a message is delivered / read
+    const handleStatus = ({ ids, status }) => {
+      setMessages((prev) =>
+        prev.map((m) =>
+          ids.includes(m.id) && STATUS_RANK[status] > STATUS_RANK[m.status] ? { ...m, status } : m
+        )
+      );
+    };
+
+    // Both people have seen these messages: hold briefly, fade out, then remove
+    const handleVanish = ({ ids }) => {
+      const holdTimer = setTimeout(() => {
+        setMessages((prev) => prev.map((m) => (ids.includes(m.id) ? { ...m, fading: true } : m)));
+        const removeTimer = setTimeout(() => {
+          setMessages((prev) => prev.filter((m) => !ids.includes(m.id)));
+        }, VANISH_FADE_MS);
+        timersRef.current.push(removeTimer);
+      }, VANISH_HOLD_MS);
+      timersRef.current.push(holdTimer);
+    };
+
     const handleMessageError = (err) => {
       console.error('Socket message error:', err);
     };
@@ -106,6 +138,8 @@ export default function ChatArea({
     socket.on('stop_typing', handleStopTyping);
     socket.on('user_status', handleUserStatus);
     socket.on('message_error', handleMessageError);
+    socket.on('messages_status', handleStatus);
+    socket.on('messages_vanish', handleVanish);
 
     return () => {
       socket.off('connect', requestStatus);
@@ -114,8 +148,47 @@ export default function ChatArea({
       socket.off('stop_typing', handleStopTyping);
       socket.off('user_status', handleUserStatus);
       socket.off('message_error', handleMessageError);
+      socket.off('messages_status', handleStatus);
+      socket.off('messages_vanish', handleVanish);
     };
   }, [currentUser]);
+
+  // Clear pending vanish timers when leaving the chat screen
+  useEffect(() => {
+    return () => timersRef.current.forEach(clearTimeout);
+  }, []);
+
+  // Track whether the browser tab / app is actually visible
+  useEffect(() => {
+    const onVisibility = () => setIsTabVisible(document.visibilityState === 'visible');
+    document.addEventListener('visibilitychange', onVisibility);
+    return () => document.removeEventListener('visibilitychange', onVisibility);
+  }, []);
+
+  // A chat counts as "seen" only when it is really on screen:
+  // tab visible, and (on phones) the chat screen is open, not the sidebar.
+  const isMobileView = window.matchMedia('(max-width: 768px)').matches;
+  const isChatVisible = isTabVisible && (!isMobileView || isChatOpen);
+
+  // Send read receipts:
+  //  - mark_read: I can see my partner's new messages
+  //  - ack_read:  I can see that my messages were read (they may now vanish)
+  useEffect(() => {
+    if (!socket || !currentUser || !isChatVisible) return;
+    const needsRead = messages.some((m) => m.senderId !== currentUser.id && m.status !== 'read');
+    const needsAck = messages.some((m) => m.senderId === currentUser.id && m.status === 'read' && !m.acked);
+    if (!needsRead && !needsAck) return;
+
+    if (needsRead) socket.emit('mark_read');
+    if (needsAck) socket.emit('ack_read');
+
+    setMessages((prev) =>
+      prev.map((m) => {
+        if (m.senderId !== currentUser.id) return m.status !== 'read' ? { ...m, status: 'read' } : m;
+        return m.status === 'read' && !m.acked ? { ...m, acked: true } : m;
+      })
+    );
+  }, [messages, isChatVisible, currentUser]);
 
   // Emit typing events
   useEffect(() => {
