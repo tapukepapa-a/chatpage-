@@ -78,6 +78,7 @@ export const initChatSocket = (io) => {
     if (!done.length) return;
     const ids = done.map((m) => m._id);
     await Message.deleteMany({ _id: { $in: ids } });
+    console.log(`[vanish] deleted ${ids.length} message(s) seen by both users`);
     const payload = { ids: ids.map((id) => id.toString()) };
     emitToUser(userA, 'messages_vanish', payload);
     emitToUser(userB, 'messages_vanish', payload);
@@ -211,7 +212,8 @@ export const initChatSocket = (io) => {
 
         if (unread.length) {
           const ids = unread.map((m) => m._id);
-          await Message.updateMany({ _id: { $in: ids } }, { $set: { readAt: new Date() } });
+          const r = await Message.updateMany({ _id: { $in: ids } }, { $set: { readAt: new Date() } });
+          console.log(`[receipts] mark_read: ${ids.length} found, ${r?.modifiedCount ?? '?'} saved`);
           emitToUser(pid, 'messages_status', { ids: ids.map(String), status: 'read' });
         }
         await vanishSeenMessages(currentUserId, pid);
@@ -225,10 +227,11 @@ export const initChatSocket = (io) => {
       try {
         const pid = await getPartnerId();
         if (!pid) return;
-        await Message.updateMany(
+        const r = await Message.updateMany(
           { sender: currentUserId, receiver: pid, readAt: { $ne: null }, senderSeenAt: null },
           { $set: { senderSeenAt: new Date() } }
         );
+        console.log(`[receipts] ack_read: ${r?.modifiedCount ?? '?'} saved`);
         await vanishSeenMessages(currentUserId, pid);
       } catch (err) {
         console.error('Socket ack_read error:', err.message);
