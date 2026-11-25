@@ -5,6 +5,7 @@
 .app-wrapper {
   width: 100vw;
   height: 100vh;
+  height: 100dvh;
   display: flex;
   flex-direction: column;
   background-color: var(--bg-darkest);
@@ -33,11 +34,14 @@
     transform: translateX(-50%);
   }
 
-  .chat-layout .chat-sidebar {
-    width: 50vw;
-  }
-
+  /* Each panel is exactly half of the 200%-wide layout = one full screen.
+     flex + min-width must be overridden, otherwise the sidebar's desktop
+     min-width (300px) and the chat area's flex:1 break the sliding math. */
+  .chat-layout .chat-sidebar,
   .chat-layout .chat-area {
-    width: 50vw;
+    flex: 0 0 50%;
+    width: 50%;
+    min-width: 0;
+    max-width: 50%;
   }
 }
