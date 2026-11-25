@@ -272,6 +272,7 @@ export default function App() {
             currentUser={currentUser}
             onSendMessage={handleSendMessage}
             onBack={() => setIsMobileChatOpen(false)}
+            onLogout={handleLogout}
             onReceiveMessage={handleReceiveMessage}
           />
         </div>

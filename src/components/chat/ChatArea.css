@@ -255,3 +255,28 @@
     padding: 10px 12px 14px;
   }
 }
+
+/* Mobile-only logout button in the chat header */
+.mobile-logout-btn {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  flex-shrink: 0;
+  border-radius: var(--radius-full);
+  color: var(--text-muted);
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(168, 85, 247, 0.2);
+}
+
+.mobile-logout-btn:active {
+  background: rgba(244, 63, 94, 0.2);
+  color: #fb7185;
+}
+
+@media (max-width: 768px) {
+  .mobile-logout-btn {
+    display: flex;
+  }
+}

@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { ChevronLeft, Send } from 'lucide-react';
+import { ChevronLeft, Send, LogOut } from 'lucide-react';
 import Avatar from '../common/Avatar';
 import MessageItem from './MessageItem';
 import './ChatArea.css';
@@ -9,7 +9,8 @@ export default function ChatArea({
   conversation,
   currentUser,
   onSendMessage,
-  onBack
+  onBack,
+  onLogout
 }) {
   const [inputText, setInputText] = useState('');
   const [messages, setMessages] = useState(conversation?.messages || []);
@@ -186,6 +187,19 @@ export default function ChatArea({
             </div>
           </div>
         </div>
+
+        {/* Mobile-only logout (the sidebar logout is hidden while a chat is open on phones) */}
+        {onLogout && (
+          <button
+            type="button"
+            className="mobile-logout-btn"
+            onClick={onLogout}
+            title="Sign Out"
+            aria-label="Sign Out"
+          >
+            <LogOut size={18} />
+          </button>
+        )}
       </header>
 
       {/* Messages Thread */}
