@@ -33,6 +33,11 @@ const userSchema = new mongoose.Schema(
       unique: true,
       enum: [1, 2]
     },
+    // Last time this user's app disconnected (used for "last seen")
+    lastSeenAt: {
+      type: Date,
+      default: null
+    },
     createdAt: {
       type: Date,
       default: Date.now

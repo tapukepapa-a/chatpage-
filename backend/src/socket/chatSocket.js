@@ -63,27 +63,6 @@ export const initChatSocket = (io) => {
     for (const sid of sockets) io.to(sid).emit(event, payload);
   };
 
-  // Disappearing messages: once the receiver has READ a message AND the sender has
-  // SEEN that it was read, delete it from the database and tell both screens.
-  const vanishSeenMessages = async (userA, userB) => {
-    const done = await Message.find({
-      $or: [
-        { sender: userA, receiver: userB },
-        { sender: userB, receiver: userA }
-      ],
-      readAt: { $ne: null },
-      senderSeenAt: { $ne: null }
-    }).select('_id').lean();
-
-    if (!done.length) return;
-    const ids = done.map((m) => m._id);
-    await Message.deleteMany({ _id: { $in: ids } });
-    console.log(`[vanish] deleted ${ids.length} message(s) seen by both users`);
-    const payload = { ids: ids.map((id) => id.toString()) };
-    emitToUser(userA, 'messages_vanish', payload);
-    emitToUser(userB, 'messages_vanish', payload);
-  };
-
   io.on('connection', async (socket) => {
     const currentUserId = socket.user._id.toString();
 
@@ -100,12 +79,14 @@ export const initChatSocket = (io) => {
     };
     // Lets the client ask for the partner's status AFTER its listeners are attached
     socket.on('get_partner_status', async () => {
-      const pid = await getPartnerId();
-      if (!pid) return;
+      const p = await User.findOne({ _id: { $ne: socket.user._id } }).select('_id lastSeenAt');
+      if (!p) return;
+      const pid = p._id.toString();
       const sockets = onlineUsers.get(pid);
       socket.emit('user_status', {
         userId: pid,
-        status: sockets && sockets.size > 0 ? 'online' : 'offline'
+        status: sockets && sockets.size > 0 ? 'online' : 'offline',
+        lastSeenAt: p.lastSeenAt || null
       });
     });
 
@@ -216,25 +197,8 @@ export const initChatSocket = (io) => {
           console.log(`[receipts] mark_read: ${ids.length} found, ${r?.modifiedCount ?? '?'} saved`);
           emitToUser(pid, 'messages_status', { ids: ids.map(String), status: 'read' });
         }
-        await vanishSeenMessages(currentUserId, pid);
       } catch (err) {
         console.error('Socket mark_read error:', err.message);
-      }
-    });
-
-    // Sender saw that their messages were read -> they can now vanish
-    socket.on('ack_read', async () => {
-      try {
-        const pid = await getPartnerId();
-        if (!pid) return;
-        const r = await Message.updateMany(
-          { sender: currentUserId, receiver: pid, readAt: { $ne: null }, senderSeenAt: null },
-          { $set: { senderSeenAt: new Date() } }
-        );
-        console.log(`[receipts] ack_read: ${r?.modifiedCount ?? '?'} saved`);
-        await vanishSeenMessages(currentUserId, pid);
-      } catch (err) {
-        console.error('Socket ack_read error:', err.message);
       }
     });
 
@@ -272,6 +236,14 @@ export const initChatSocket = (io) => {
         if (userSockets.size === 0) {
           onlineUsers.delete(currentUserId);
 
+          // Remember when this user was last online ("last seen")
+          const lastSeenAt = new Date();
+          try {
+            await User.updateOne({ _id: currentUserId }, { $set: { lastSeenAt } });
+          } catch (e) {
+            console.error('lastSeen save error:', e.message);
+          }
+
           // Broadcast offline presence only to partner
           const pid = await getPartnerId();
           if (pid) {
@@ -280,7 +252,8 @@ export const initChatSocket = (io) => {
               for (const sid of partnerSockets) {
                 io.to(sid).emit('user_status', {
                   userId: currentUserId,
-                  status: 'offline'
+                  status: 'offline',
+                  lastSeenAt
                 });
               }
             }
@@ -323,9 +296,11 @@ export const initChatSocket = (io) => {
     if (partnerIdStr) {
       const partnerSockets = onlineUsers.get(partnerIdStr);
       const isPartnerOnline = partnerSockets && partnerSockets.size > 0;
+      const partnerDoc = await User.findById(partnerIdStr).select('lastSeenAt');
       socket.emit('user_status', {
         userId: partnerIdStr,
-        status: isPartnerOnline ? 'online' : 'offline'
+        status: isPartnerOnline ? 'online' : 'offline',
+        lastSeenAt: partnerDoc?.lastSeenAt || null
       });
     }
   });

@@ -79,6 +79,7 @@ export default function App() {
         }
       ]);
       setActiveChatId('conv_partner');
+      setIsMobileChatOpen(true); // phones: open the chat straight away so messages count as seen
     } else if (currentUser && !partner) {
       setConversations([
         {

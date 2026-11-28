@@ -5,10 +5,21 @@ import MessageItem from './MessageItem';
 import './ChatArea.css';
 import socket from '../../socket.js';
 
-// Disappearing messages: after both people have seen a message it stays on screen
-// for VANISH_HOLD_MS, then fades out for VANISH_FADE_MS and is removed.
-const VANISH_HOLD_MS = 10000;
-const VANISH_FADE_MS = 800;
+// Messages are deleted by the server 24 hours after the receiver read them
+// (MongoDB TTL index on Message.readAt), so the screen has no vanish timers.
+
+// "Last seen today at 3:45 PM" style text for the offline status
+const formatLastSeen = (iso) => {
+  if (!iso) return 'Offline';
+  const d = new Date(iso);
+  const time = d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+  const today = new Date();
+  const yesterday = new Date();
+  yesterday.setDate(today.getDate() - 1);
+  if (d.toDateString() === today.toDateString()) return `Last seen today at ${time}`;
+  if (d.toDateString() === yesterday.toDateString()) return `Last seen yesterday at ${time}`;
+  return `Last seen ${d.toLocaleDateString([], { day: 'numeric', month: 'short' })} at ${time}`;
+};
 
 // Tick ranking so a status never goes backwards (sent -> delivered -> read)
 const STATUS_RANK = { sent: 0, delivered: 1, read: 2 };
@@ -19,9 +30,7 @@ const formatMessage = (msg) => ({
   text: msg.text,
   timestamp: new Date(msg.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
   createdAt: msg.createdAt,
-  status: msg.readAt ? 'read' : msg.deliveredAt ? 'delivered' : 'sent',
-  acked: false,
-  fading: false
+  status: msg.readAt ? 'read' : msg.deliveredAt ? 'delivered' : 'sent'
 });
 
 export default function ChatArea({
@@ -36,10 +45,9 @@ export default function ChatArea({
   const [messages, setMessages] = useState(conversation?.messages || []);
   const [isPartnerTyping, setIsPartnerTyping] = useState(false);
   const [partnerStatus, setPartnerStatus] = useState('offline');
+  const [partnerLastSeen, setPartnerLastSeen] = useState(null);
   const [isTabVisible, setIsTabVisible] = useState(document.visibilityState === 'visible');
   const messagesEndRef = useRef(null);
-  const timersRef = useRef([]);
-  const vanishingRef = useRef(new Set()); // ids already deleted on the server, still fading on screen
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -69,18 +77,13 @@ export default function ChatArea({
           if (!o) return m;
           return {
             ...m,
-            acked: o.acked,
-            fading: o.fading,
             status: STATUS_RANK[o.status] > STATUS_RANK[m.status] ? o.status : m.status
           };
         });
 
-        // Keep messages that are still in their "vanishing" countdown (already deleted
-        // on the server) and ones that arrived live while this request was running.
+        // Keep messages that arrived live while this request was running.
         const keep = prev.filter(
-          (m) =>
-            !freshIds.has(m.id) &&
-            (vanishingRef.current.has(m.id) || new Date(m.createdAt).getTime() >= startedAt - 2000)
+          (m) => !freshIds.has(m.id) && new Date(m.createdAt).getTime() >= startedAt - 2000
         );
 
         return [...merged, ...keep].sort(
@@ -126,9 +129,10 @@ export default function ChatArea({
       }
     };
 
-    const handleUserStatus = ({ userId, status }) => {
+    const handleUserStatus = ({ userId, status, lastSeenAt }) => {
       if (currentUser && userId !== currentUser.id) {
         setPartnerStatus(status);
+        if (lastSeenAt) setPartnerLastSeen(lastSeenAt);
       }
     };
 
@@ -139,20 +143,6 @@ export default function ChatArea({
           ids.includes(m.id) && STATUS_RANK[status] > STATUS_RANK[m.status] ? { ...m, status } : m
         )
       );
-    };
-
-    // Both people have seen these messages: hold briefly, fade out, then remove
-    const handleVanish = ({ ids }) => {
-      ids.forEach((id) => vanishingRef.current.add(id));
-      const holdTimer = setTimeout(() => {
-        setMessages((prev) => prev.map((m) => (ids.includes(m.id) ? { ...m, fading: true } : m)));
-        const removeTimer = setTimeout(() => {
-          setMessages((prev) => prev.filter((m) => !ids.includes(m.id)));
-          ids.forEach((id) => vanishingRef.current.delete(id));
-        }, VANISH_FADE_MS);
-        timersRef.current.push(removeTimer);
-      }, VANISH_HOLD_MS);
-      timersRef.current.push(holdTimer);
     };
 
     const handleMessageError = (err) => {
@@ -173,7 +163,6 @@ export default function ChatArea({
     socket.on('user_status', handleUserStatus);
     socket.on('message_error', handleMessageError);
     socket.on('messages_status', handleStatus);
-    socket.on('messages_vanish', handleVanish);
 
     return () => {
       socket.off('connect', requestStatus);
@@ -183,14 +172,8 @@ export default function ChatArea({
       socket.off('user_status', handleUserStatus);
       socket.off('message_error', handleMessageError);
       socket.off('messages_status', handleStatus);
-      socket.off('messages_vanish', handleVanish);
     };
   }, [currentUser]);
-
-  // Clear pending vanish timers when leaving the chat screen
-  useEffect(() => {
-    return () => timersRef.current.forEach(clearTimeout);
-  }, []);
 
   // Track whether the browser tab / app is actually visible
   useEffect(() => {
@@ -208,23 +191,17 @@ export default function ChatArea({
   const isMobileView = window.matchMedia('(max-width: 768px)').matches;
   const isChatVisible = isTabVisible && (!isMobileView || isChatOpen);
 
-  // Send read receipts:
-  //  - mark_read: I can see my partner's new messages
-  //  - ack_read:  I can see that my messages were read (they may now vanish)
+  // Read receipt: tell the server I can see my partner's new messages.
+  // The server stores readAt, and deletes the message 24 hours later.
   useEffect(() => {
     if (!socket || !currentUser || !isChatVisible) return;
     const needsRead = messages.some((m) => m.senderId !== currentUser.id && m.status !== 'read');
-    const needsAck = messages.some((m) => m.senderId === currentUser.id && m.status === 'read' && !m.acked);
-    if (!needsRead && !needsAck) return;
+    if (!needsRead) return;
 
-    if (needsRead) socket.emit('mark_read');
-    if (needsAck) socket.emit('ack_read');
+    socket.emit('mark_read');
 
     setMessages((prev) =>
-      prev.map((m) => {
-        if (m.senderId !== currentUser.id) return m.status !== 'read' ? { ...m, status: 'read' } : m;
-        return m.status === 'read' && !m.acked ? { ...m, acked: true } : m;
-      })
+      prev.map((m) => (m.senderId !== currentUser.id && m.status !== 'read' ? { ...m, status: 'read' } : m))
     );
   }, [messages, isChatVisible, currentUser]);
 
@@ -293,7 +270,7 @@ export default function ChatArea({
               <span className="header-name">{conversation.name}</span>
               <span className={`header-status-indicator ${isOnline ? 'status-online-text' : 'status-offline-text'}`}>
                 <span className={`header-status-dot ${isOnline ? 'is-online' : 'is-offline'}`} />
-                {isOnline ? 'Online' : 'Offline'}
+                {isOnline ? 'Online' : formatLastSeen(partnerLastSeen)}
               </span>
             </div>
           </div>
